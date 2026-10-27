@@ -288,6 +288,11 @@ void SohMenu::AddMenuEnhancements() {
         .CVar(CVAR_ENHANCEMENT("PauseWarp"))
         .Options(CheckboxOptions().Tooltip(
             "Selection of warp song in pause menu initiates a warp. Disables song playback."));
+    AddWidget(path, "Show Neighboring Pages in Pause Menu", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_ENHANCEMENT("PauseMenuPageNavigation"))
+        .Options(CheckboxOptions().Tooltip(
+            "Labels the pages to the left and right of the current pause menu page, along with the buttons "
+            "that rotate to them."));
 
     path.column = SECTION_COLUMN_2;
     AddWidget(path, "Controls", WIDGET_SEPARATOR_TEXT);

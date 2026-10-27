@@ -22,6 +22,7 @@
 #include "soh/ResourceManagerHelpers.h"
 #include "soh/SaveManager.h"
 #include "soh/Enhancements/kaleido.h"
+#include "soh/ShipUtils.h"
 #include <soh_assets.h>
 #include <libultraship/bridge/consolevariablebridge.h>
 
@@ -2435,6 +2436,135 @@ void KaleidoScope_DrawInfoPanel(PlayState* play) {
     CLOSE_DISPS(play->state.gfxCtx);
 }
 
+// #region SOH [Enhancement] Page navigation hints
+// Labels the neighbouring pages in the header strip of the current page, so it is clear which way to rotate.
+// Screen positions assume the resting page: 240 units wide, scaled 0.78, 157.55 units from the eye with a 60 degree
+// fov, which places the header strip at y 38-71 and the page edges at x 36-283.
+#define PAGE_NAV_LEFT_X 42
+#define PAGE_NAV_RIGHT_X 277
+#define PAGE_NAV_Y 49
+#define PAGE_NAV_CHAR_SIZE 10
+
+#define FONT_CHAR_BTN_L 0xA2
+#define FONT_CHAR_BTN_R 0xA3
+#define FONT_CHAR_BTN_Z 0xA4
+
+// Indexed by page, then language. Accented characters use the game font's encoding.
+static const char* sPageNavNames[][3] = {
+    { "Select Item", "Gegenst\x93nde", "Inventaire" }, // PAUSE_ITEM
+    { "Map", "Karte", "Carte" },                       // PAUSE_MAP
+    { "Quest Status", "Quest Status", "Qu\x97te" },    // PAUSE_QUEST
+    { "Equipment", "Ausr\x9Estung", "Equipement" },    // PAUSE_EQUIP
+};
+
+static s16 KaleidoScope_GetPageNavTextWidth(const char* text) {
+    f32 width = 0.0f;
+
+    for (; *text != '\0'; text++) {
+        width += Ship_GetCharFontWidth(*text);
+    }
+
+    return width * PAGE_NAV_CHAR_SIZE / FONT_CHAR_TEX_WIDTH;
+}
+
+static Gfx* KaleidoScope_DrawPageNavText(Gfx* gfx, const char* text, s16 x, s16 y, Color_RGB8 color, u8 alpha) {
+    s32 texScale = (1 << 10) * FONT_CHAR_TEX_WIDTH / PAGE_NAV_CHAR_SIZE;
+    f32 posX = x;
+
+    for (; *text != '\0'; text++) {
+        u8 character = *text;
+
+        if (character != ' ') {
+            s16 charX = posX;
+
+            gDPPipeSync(gfx++);
+            gDPLoadTextureBlock_4b(gfx++, Ship_GetCharFontTexture(character), G_IM_FMT_I, FONT_CHAR_TEX_WIDTH,
+                                   FONT_CHAR_TEX_HEIGHT, 0, G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP,
+                                   G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+
+            // Drop shadow, as in message boxes
+            gDPSetPrimColor(gfx++, 0, 0, 0, 0, 0, alpha);
+            gSPTextureRectangle(gfx++, (charX + 1) << 2, (y + 1) << 2, (charX + 1 + PAGE_NAV_CHAR_SIZE) << 2,
+                                (y + 1 + PAGE_NAV_CHAR_SIZE) << 2, G_TX_RENDERTILE, 0, 0, texScale, texScale);
+
+            gDPPipeSync(gfx++);
+            gDPSetPrimColor(gfx++, 0, 0, color.r, color.g, color.b, alpha);
+            gSPTextureRectangle(gfx++, charX << 2, y << 2, (charX + PAGE_NAV_CHAR_SIZE) << 2,
+                                (y + PAGE_NAV_CHAR_SIZE) << 2, G_TX_RENDERTILE, 0, 0, texScale, texScale);
+        }
+
+        posX += Ship_GetCharFontWidth(character) * PAGE_NAV_CHAR_SIZE / FONT_CHAR_TEX_WIDTH;
+    }
+
+    return gfx;
+}
+
+void KaleidoScope_DrawPageNavigation(PlayState* play) {
+    // Same colours as the L/R arrow icons and the "To Map" style prompts in the info panel
+    static const Color_RGB8 sButtonColor = { 180, 210, 255 };
+    static const Color_RGB8 sNameColor = { 255, 255, 255 };
+    static const Color_RGB8 sSelectedNameColor = { 255, 200, 0 };
+    PauseContext* pauseCtx = &play->pauseCtx;
+    char leftButton[] = { FONT_CHAR_BTN_Z, ' ', '\0' };
+    char rightButton[] = { ' ', FONT_CHAR_BTN_R, '\0' };
+    const char* leftName;
+    const char* rightName;
+    s16 page = pauseCtx->pageIndex;
+    s16 alpha = pauseCtx->alpha;
+    s16 language = gSaveContext.language;
+    s16 x;
+
+    if (pauseCtx->state != 6) {
+        return;
+    }
+
+    // While the pages rotate, fade out the old labels and fade in the labels for the page being turned to
+    if (pauseCtx->unk_1E4 == 1) {
+        alpha = alpha * ABS(pauseCtx->unk_1EA - 32) / 32;
+        if (pauseCtx->unk_1EA >= 32) {
+            page = D_8082ABEC[pauseCtx->mode];
+        }
+    }
+
+    if (alpha <= 0) {
+        return;
+    }
+
+    if (CVarGetInteger(CVAR_ENHANCEMENT("NGCKaleidoSwitcher"), 0) != 0) {
+        leftButton[0] = FONT_CHAR_BTN_L;
+    }
+
+    if (language == LANGUAGE_JPN) {
+        language = LANGUAGE_ENG;
+    }
+
+    // Switching left uses the odd mode for the page, switching right uses the even mode
+    leftName = sPageNavNames[D_8082ABEC[page * 2 + 1]][language];
+    rightName = sPageNavNames[D_8082ABEC[page * 2]][language];
+
+    OPEN_DISPS(play->state.gfxCtx);
+
+    gDPPipeSync(POLY_OPA_DISP++);
+    gDPSetCombineMode(POLY_OPA_DISP++, G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM);
+
+    x = PAGE_NAV_LEFT_X;
+    POLY_OPA_DISP = KaleidoScope_DrawPageNavText(POLY_OPA_DISP, leftButton, x, PAGE_NAV_Y, sButtonColor, alpha);
+    x += KaleidoScope_GetPageNavTextWidth(leftButton);
+    POLY_OPA_DISP = KaleidoScope_DrawPageNavText(
+        POLY_OPA_DISP, leftName, x, PAGE_NAV_Y,
+        (pauseCtx->cursorSpecialPos == PAUSE_CURSOR_PAGE_LEFT) ? sSelectedNameColor : sNameColor, alpha);
+
+    x = PAGE_NAV_RIGHT_X - KaleidoScope_GetPageNavTextWidth(rightButton);
+    POLY_OPA_DISP = KaleidoScope_DrawPageNavText(POLY_OPA_DISP, rightButton, x, PAGE_NAV_Y, sButtonColor, alpha);
+    x -= KaleidoScope_GetPageNavTextWidth(rightName);
+    POLY_OPA_DISP = KaleidoScope_DrawPageNavText(
+        POLY_OPA_DISP, rightName, x, PAGE_NAV_Y,
+        (pauseCtx->cursorSpecialPos == PAUSE_CURSOR_PAGE_RIGHT) ? sSelectedNameColor : sNameColor, alpha);
+
+    CLOSE_DISPS(play->state.gfxCtx);
+}
+// #endregion
+
 void KaleidoScope_UpdateNamePanel(PlayState* play) {
     PauseContext* pauseCtx = &play->pauseCtx;
     u16 sp2A;
@@ -3530,6 +3660,10 @@ void KaleidoScope_Draw(PlayState* play) {
 
         if (!((pauseCtx->state >= 8) && (pauseCtx->state <= 0x11))) {
             KaleidoScope_DrawInfoPanel(play);
+        }
+
+        if (CVarGetInteger(CVAR_ENHANCEMENT("PauseMenuPageNavigation"), 0)) {
+            KaleidoScope_DrawPageNavigation(play);
         }
     }
 
